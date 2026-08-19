@@ -1,0 +1,13 @@
+navsat_transform:
+  ros__parameters:
+    frequency: 30.0
+    delay: 3.0
+    magnetic_declination_radians: 0.0
+    yaw_offset: 0.0
+    zero_altitude: true
+    broadcast_utm_transform: false
+    publish_filtered_gps: false
+    use_odometry_yaw: false
+    wait_for_datum: true
+    # must match worlds/lawn_field.sdf spherical_coordinates and boundary.yaml
+    datum: [45.0, 9.0, 0.0]

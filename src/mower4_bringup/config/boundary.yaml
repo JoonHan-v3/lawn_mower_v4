@@ -1,0 +1,19 @@
+# Datum must match <spherical_coordinates> in worlds/lawn_field.sdf and the
+# datum in config/navsat_transform.yaml. Keep it off the equator: at lat 0 the
+# robot's north/south travel flips UTM hemisphere and the northing jumps by
+# 10,000,000m, which throws the GPS-fused pose away entirely.
+datum:
+  lat: 45.0
+  lon: 9.0
+
+# L-shaped boundary, 10m x 10m bounding box centred on the datum with the
+# 4m x 4m NE quadrant notched out (84 sq m, one reflex corner). Verified with
+# shapely: stays a single valid Polygon (no arm pinches off) after the
+# coverage planner's default 0.5m boundary_inset erosion.
+corners:
+  - {lat: 45.00004499, lon: 8.99993659}   # outer NW      (-5, +5)
+  - {lat: 45.00004499, lon: 9.00001268}   # notch top      (+1, +5)
+  - {lat: 45.00000900, lon: 9.00001268}   # notch inner    (+1, +1) - reflex corner
+  - {lat: 45.00000900, lon: 9.00006341}   # notch right    (+5, +1)
+  - {lat: 44.99995501, lon: 9.00006341}   # outer SE       (+5, -5)
+  - {lat: 44.99995501, lon: 8.99993659}   # outer SW       (-5, -5)

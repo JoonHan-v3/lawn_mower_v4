@@ -1,0 +1,40 @@
+<launch>
+    <node pkg="mower4_coverage" exec="boundary_loader.py">
+        <param name="use_sim_time" value="true"/>
+        <param name="boundary_file" value="$(find-pkg-share mower4_bringup)/config/boundary.yaml"/>
+    </node>
+
+    <node pkg="mower4_coverage" exec="coverage_planner.py">
+        <param name="use_sim_time" value="true"/>
+        <param name="cutting_width" value="0.42"/>
+        <param name="overlap" value="0.15"/>
+        <param name="boundary_inset" value="0.5"/>
+        <param name="point_spacing" value="0.2"/>
+    </node>
+
+    <node pkg="mower4_coverage" exec="coverage_executor.py" output="screen">
+        <param name="use_sim_time" value="true"/>
+        <!-- how far ahead of the mower the planned sweep is checked against
+             the global costmap; keep it inside obstacle_max_range in
+             config/nav2_params.yaml or obstacles are only seen once the
+             mower is already on them -->
+        <param name="check_horizon" value="3.0"/>
+        <!-- costmap cost at or above which a sweep point counts as blocked.
+             150 is roughly the inflation cost at the mower's 0.43m
+             circumscribed radius, the distance beyond which its footprint
+             cannot reach an obstacle at any heading. Raising it towards 253
+             (nav2's inscribed cost) mows closer in, at the price of the
+             controller refusing to drive rows it judges uncrossable and the
+             executor having to recover instead of routing around. -->
+        <param name="blocked_cost" value="150"/>
+        <!-- the sweep has to be clear for this far past an obstacle before
+             the mower will rejoin it there. Kept short: a long run has to stay
+             clear across the row end into the next row, and when the same
+             obstacle blocks that one too the rejoin is pushed a whole row on,
+             giving up grass the mower could have cut. -->
+        <param name="clear_run" value="0.5"/>
+        <param name="replan_cooldown" value="2.0"/>
+        <param name="stuck_skip" value="2.0"/>
+        <param name="max_recoveries" value="3"/>
+    </node>
+</launch>

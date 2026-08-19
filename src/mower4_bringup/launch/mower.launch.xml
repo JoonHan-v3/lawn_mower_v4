@@ -1,0 +1,62 @@
+<launch>
+    <let name="urdf_path" value="$(find-pkg-share mower4_description)/urdf/robot.urdf.xacro"/>
+    <let name="rviz_config_path" value="$(find-pkg-share mower4_description)/rviz/urdf_config.rviz"/>
+    <let name="gazebo_config_path" value="$(find-pkg-share mower4_bringup)/config/gazebo_bridge.yaml" />
+    <let name="world_path" value="$(find-pkg-share mower4_bringup)/worlds/lawn_field.sdf" />
+
+    <node pkg="robot_state_publisher" exec="robot_state_publisher">
+        <param name="robot_description" value="$(command 'xacro $(var urdf_path)')"/>
+        <param name="use_sim_time" value="true"/>
+    </node>
+
+    <include file="$(find-pkg-share ros_gz_sim)/launch/gz_sim.launch.py">
+        <arg name="gz_args" value="$(var world_path) -r"/>
+    </include>
+
+    <node pkg="ros_gz_sim" exec="create" args="-topic robot_description" />
+
+    <node pkg="ros_gz_bridge" exec="parameter_bridge">
+        <param name="config_file" value="$(var gazebo_config_path)" />
+    </node>
+
+    <node pkg="mower4_bringup" exec="grass_mower.py">
+        <param name="use_sim_time" value="true"/>
+        <!-- trail geometry accumulates for the whole mow and is re-rendered
+             every lidar scan, so these two bound simulation cost over time -->
+        <param name="trail_spacing" value="0.25"/>
+        <param name="batch_size" value="25"/>
+    </node>
+
+    <node pkg="rviz2" exec="rviz2" args="-d $(var rviz_config_path)">
+        <param name="use_sim_time" value="true"/>
+    </node>
+
+    <node pkg="mower4_bringup" exec="wheel_odometry.py">
+        <param name="use_sim_time" value="true"/>
+        <param name="wheel_separation" value="0.56"/>
+        <param name="wheel_radius" value="0.12"/>
+        <param name="left_wheel_joint" value="base_left_wheel_joint"/>
+        <param name="right_wheel_joint" value="base_right_wheel_joint"/>
+        <param name="publish_rate" value="50.0"/>
+    </node>
+
+    <node pkg="robot_localization" exec="ekf_node" name="ekf_filter_node_odom">
+        <param name="use_sim_time" value="true"/>
+        <param from="$(find-pkg-share mower4_bringup)/config/ekf_local.yaml"/>
+        <remap from="odometry/filtered" to="odometry/filtered/local"/>
+    </node>
+
+    <node pkg="robot_localization" exec="ekf_node" name="ekf_filter_node_map">
+        <param name="use_sim_time" value="true"/>
+        <param from="$(find-pkg-share mower4_bringup)/config/ekf_global.yaml"/>
+        <remap from="odometry/filtered" to="odometry/filtered/global"/>
+    </node>
+
+    <node pkg="robot_localization" exec="navsat_transform_node" name="navsat_transform">
+        <param name="use_sim_time" value="true"/>
+        <param from="$(find-pkg-share mower4_bringup)/config/navsat_transform.yaml"/>
+        <remap from="odometry/filtered" to="odometry/filtered/global"/>
+        <remap from="imu/data" to="imu"/>
+    </node>
+    
+</launch>

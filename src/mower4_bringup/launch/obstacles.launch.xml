@@ -1,0 +1,15 @@
+<launch>
+    <!-- Spawns obstacles into the running lawn_world so a coverage run has
+         something to route around. Each entry is "x,y[,radius[,height]]",
+         separated by semicolons; spawn_delay lets them appear part-way
+         through a run instead of before it starts. -->
+    <arg name="obstacles" default="-1.5,-2.0,0.5; 2.5,-3.5,0.6; -3.0,2.0,0.5"/>
+    <arg name="spawn_delay" default="0.0"/>
+
+    <node pkg="mower4_bringup" exec="spawn_obstacles.py" output="screen">
+        <param name="use_sim_time" value="true"/>
+        <param name="world_name" value="lawn_world"/>
+        <param name="obstacles" value="$(var obstacles)"/>
+        <param name="spawn_delay" value="$(var spawn_delay)"/>
+    </node>
+</launch>
