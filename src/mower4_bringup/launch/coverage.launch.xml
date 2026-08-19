@@ -19,14 +19,14 @@
              config/nav2_params.yaml or obstacles are only seen once the
              mower is already on them -->
         <param name="check_horizon" value="3.0"/>
-        <!-- costmap cost at or above which a sweep point counts as blocked.
-             150 is roughly the inflation cost at the mower's 0.43m
-             circumscribed radius, the distance beyond which its footprint
-             cannot reach an obstacle at any heading. Raising it towards 253
-             (nav2's inscribed cost) mows closer in, at the price of the
-             controller refusing to drive rows it judges uncrossable and the
-             executor having to recover instead of routing around. -->
-        <param name="blocked_cost" value="150"/>
+        <!-- how far a sweep point must be from a real obstacle cell to
+             count as drivable. The mower's footprint is 0.25m half-width, so
+             0.40m is that plus 0.15m of margin for tracking error. Lower it
+             to mow closer in, at the price of the controller refusing rows it
+             judges uncrossable and the executor recovering instead of routing
+             around. Measured in metres against lethal cells, so it is
+             unaffected by the costmap's inflation tuning. -->
+        <param name="obstacle_clearance" value="0.40"/>
         <!-- the sweep has to be clear for this far past an obstacle before
              the mower will rejoin it there. Kept short: a long run has to stay
              clear across the row end into the next row, and when the same

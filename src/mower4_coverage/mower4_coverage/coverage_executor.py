@@ -62,13 +62,39 @@ class CostmapGrid:
             dst = (msg.y + row) * self.size_x + msg.x
             self.data[dst:dst + msg.size_x] = patch[src:src + msg.size_x]
 
+    def cell(self, x, y):
+        """Grid indices for a world point.
+
+        The epsilon is not cosmetic: (14.4 / 0.1) is 143.99999999999997 in
+        binary, so plain truncation drops a point sitting exactly on a cell
+        boundary into the cell below and quietly costs 0.1m of clearance.
+        """
+        return (int((x - self.origin_x) / self.resolution + 1e-6),
+                int((y - self.origin_y) / self.resolution + 1e-6))
+
     def cost(self, x, y):
         """Cost at a world point, or None where the point falls off the grid."""
-        i = int((x - self.origin_x) / self.resolution)
-        j = int((y - self.origin_y) / self.resolution)
+        i, j = self.cell(x, y)
         if not (0 <= i < self.size_x and 0 <= j < self.size_y):
             return None
         return self.data[j * self.size_x + i]
+
+    def any_cost_at_least(self, x, y, offsets, threshold):
+        """Is any cell within `offsets` of this point at or above `threshold`?
+
+        Reading a disc of real obstacle cells beats reading the one cell under
+        the point and leaning on the inflation gradient to supply the
+        clearance: the gradient's reach is set by inflation_radius and
+        cost_scaling_factor, so tuning how tightly the planner hugs an
+        obstacle would silently change how much sweep the mower gives up.
+        """
+        i0, j0 = self.cell(x, y)
+        for di, dj in offsets:
+            i, j = i0 + di, j0 + dj
+            if 0 <= i < self.size_x and 0 <= j < self.size_y:
+                if self.data[j * self.size_x + i] >= threshold:
+                    return True
+        return False
 
 
 class CoverageExecutor(Node):
@@ -85,7 +111,13 @@ class CoverageExecutor(Node):
         self.declare_parameter("progress_checker_id", "progress_checker")
         self.declare_parameter("supervision_rate", 2.0)
         self.declare_parameter("check_horizon", 3.0)
-        self.declare_parameter("blocked_cost", 150)
+        self.declare_parameter("obstacle_clearance", 0.40)
+        # 254 is nav2's LETHAL_OBSTACLE - a cell something is actually in.
+        # 253 is INSCRIBED_INFLATED_OBSTACLE, which the inflation layer paints
+        # over everything within the robot's inscribed radius of a real
+        # obstacle, so measuring clearance from those cells silently adds
+        # another 0.25m to it and the mower turns a quarter-metre early.
+        self.declare_parameter("lethal_cost", 254)
         self.declare_parameter("clear_run", 0.5)
         self.declare_parameter("rejoin_advance", 0.5)
         self.declare_parameter("max_replan_attempts", 6)
@@ -107,7 +139,8 @@ class CoverageExecutor(Node):
         self.progress_checker_id = self.get_parameter("progress_checker_id").value
         supervision_rate = self.get_parameter("supervision_rate").value
         self.check_horizon = self.get_parameter("check_horizon").value
-        self.blocked_cost = self.get_parameter("blocked_cost").value
+        self.obstacle_clearance = self.get_parameter("obstacle_clearance").value
+        self.lethal_cost = self.get_parameter("lethal_cost").value
         self.clear_run = self.get_parameter("clear_run").value
         self.rejoin_advance = self.get_parameter("rejoin_advance").value
         self.max_replan_attempts = self.get_parameter("max_replan_attempts").value
@@ -147,6 +180,8 @@ class CoverageExecutor(Node):
         self.cum = []
 
         self.costmap = None
+        self.clearance_offsets = None
+        self.clearance_resolution = None
         self.state = "waiting"
         self.cursor = 0
         # index the robot is currently detouring towards; while it is set the
@@ -228,15 +263,35 @@ class CoverageExecutor(Node):
             j += 1
         return j
 
+    def build_clearance_offsets(self, resolution):
+        """Cell offsets covering a disc of `obstacle_clearance` metres.
+
+        The tolerance keeps the disc's radius honest: 6 * 0.1 is fractionally
+        greater than 0.6 in binary while 8 * 0.1 is exactly 0.8, so a bare
+        comparison drops the outermost ring for some clearances and not
+        others, and the parameter stops meaning what it says.
+        """
+        reach = int(math.ceil(self.obstacle_clearance / resolution))
+        limit = self.obstacle_clearance + 1e-9
+        offsets = []
+        for di in range(-reach, reach + 1):
+            for dj in range(-reach, reach + 1):
+                if math.hypot(di, dj) * resolution <= limit:
+                    offsets.append((di, dj))
+        return offsets
+
     def is_blocked(self, idx):
         if self.costmap is None:
             return False
-        cost = self.costmap.cost(*self.xy[idx])
+        if self.clearance_resolution != self.costmap.resolution:
+            self.clearance_resolution = self.costmap.resolution
+            self.clearance_offsets = self.build_clearance_offsets(self.clearance_resolution)
+        x, y = self.xy[idx]
         # off-grid counts as clear: the sweep lives inside the boundary, which
         # the global costmap covers with margin, so this only fires on setups
         # where the costmap is too small to judge - and refusing to drive
         # there would be worse than driving there
-        return cost is not None and cost >= self.blocked_cost
+        return self.costmap.any_cost_at_least(x, y, self.clearance_offsets, self.lethal_cost)
 
     def first_blocked(self, start):
         """First blocked index within `check_horizon` metres ahead of `start`."""

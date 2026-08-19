@@ -19,13 +19,13 @@ Version 3 got the mower covering a whole lawn: a GPS-surveyed boundary, a boustr
 | Visibility | Coverage percentage after the fact, from `coverage_checker.py` | Plus `/active_path` and `/coverage_skipped` live in RViz, and an end-of-run summary of detours, recoveries, and metres given up |
 | Default mow area | 20 × 20 m square (400 m², ~1030 m of sweep) | L-shaped: 10 × 10 m with the north-east 4 × 4 m quadrant notched out (84 m², one reflex corner, ~193 m of sweep) |
 
-- **Obstacle-aware replanning added.** `coverage_executor.py` grew from a fire-and-forget goal into a supervised one. At `supervision_rate` it projects the mower onto the sweep, tests the next `check_horizon` metres of it against the global costmap, and on a blockage picks the first point past the obstacle where the sweep stays clear for `clear_run` metres, asks the global planner for a route from wherever the mower is to that point, and follows the detour spliced onto the rest of the sweep. Only the stretch the obstacle physically occupies is given up. See [Replanning around obstacles](#replanning-around-obstacles).
+- **Obstacle-aware replanning added.** `coverage_executor.py` grew from a fire-and-forget goal into a supervised one. At `supervision_rate` it projects the mower onto the sweep, tests the next `check_horizon` metres of it against the global costmap, and on a blockage picks the first point past the obstacle where the sweep stays clear for `clear_run` metres, then mows the row up to the obstacle before detouring around to that point and carrying on. Only the stretch the obstacle physically occupies is given up. See [Replanning around obstacles](#replanning-around-obstacles).
 - **The "one `FollowPath` goal per process" limit does not exist.** Version 3's executor was built around it, and it is the reason a blocked run had to stop rather than route around. Re-tested directly against `controller_server` with this repo's own `nav2_params.yaml` — four sequential goals sent from result callbacks, then ten preemptions 1.5 s apart — it survived all of them. Whatever the original crash was, it was not that.
-- **Two Nav2 settings exist for the replanner's benefit.** `always_send_full_costmap: true` on the global costmap, because the default publishes the full grid once — before anything has subscribed — and only incremental patches afterwards, so a node starting with the coverage run has nothing to apply them to. And `obstacle_max_range: 6.0` / `raytrace_max_range: 8.0` on its obstacle layer, because Nav2's 2.5 m default marks obstacles barely outside the footprint, leaving no room to route around them.
+- **Three Nav2 settings exist for the replanner's benefit**, all on the global costmap. `always_send_full_costmap: true`, because the default publishes the full grid once — before anything has subscribed — and only incremental patches afterwards, so a node starting with the coverage run has nothing to apply them to. `obstacle_max_range: 6.0` / `raytrace_max_range: 8.0`, because Nav2's 2.5 m default marks obstacles barely outside the footprint, leaving no room to route around them. And a tighter `inflation_radius: 0.40` / `cost_scaling_factor: 5.0`, because the default inflation gave detours a reason to swing right around it — see [How wide the detour swings](#how-wide-the-detour-swings).
 - **Obstacles can be put on the lawn without editing the world.** `scripts/spawn_obstacles.py` and `launch/obstacles.launch.xml` spawn cylinders into the running Gazebo world at given positions, optionally after a delay so they turn up part-way through a mow — which is the case the replanner exists for, and not one a static `lawn_field.sdf` can produce.
 - **The default boundary is now non-convex.** An L-shape with a reflex corner, so a sweep row can cross it in two disjoint segments and the inset can pinch. `coverage_planner.py` is unchanged from Version 3 — its row clipping already handled this — but the default configuration now exercises it instead of a rectangle that never could.
 
-Everything else is byte-identical to Version 3: the robot model and world, both EKFs and `navsat_transform`, the Gazebo bridge, wheel odometry, the grass-trail painter, the Nav2 bring-up, `boundary_loader.py`, `coverage_planner.py`, and both diagnostic nodes.
+Everything else is byte-identical to Version 3: the robot model, both EKFs and `navsat_transform`, the Gazebo bridge, wheel odometry, the grass-trail painter, the Nav2 bring-up, `boundary_loader.py`, `coverage_planner.py`, and both diagnostic nodes. The world SDF differs by one line — `real_time_factor` is 2.0 rather than 1.0, so a 193 m sweep runs in about half the wall-clock time when the machine can keep up.
 
 Camera-based obstacle detection/classification is the next milestone; see the [Project guide](#project-guide).
 
@@ -141,14 +141,17 @@ Set in `launch/coverage.launch.xml`:
 The sweep is planned once, before the run, from the boundary polygon alone. It knows nothing about the bush that grew into the lawn or the chair someone left on it, so a coverage run meets obstacles the plan does not contain. `coverage_executor.py` handles them while the run is in progress:
 
 1. It tracks where the mower is along the sweep, and checks the next `check_horizon` metres of it against the **global costmap** — the same map the global planner routes against, so what the executor calls blocked and what the planner will steer around are the same thing.
-2. When a stretch comes up blocked, it finds the first point past the obstacle where the sweep stays clear for `clear_run` metres, asks the global planner for a route from wherever the mower is to that point, and follows the detour spliced onto the rest of the sweep. Only the stretch the obstacle physically occupies is given up.
-3. If the controller gives up anyway (`FAILED_TO_MAKE_PROGRESS`, `NO_VALID_CONTROL`), it backs up `backup_distance` and replans from there. After `max_recoveries` attempts in the same place it abandons `stuck_skip` metres of sweep and rejoins beyond it, and if that too buys no progress it stops and says the mower is stuck rather than blocked.
+2. When a stretch comes up blocked, it finds the first point past the obstacle where the sweep stays clear for `clear_run` metres, and asks the global planner for a route to it.
+3. That route is planned **from the last clear point before the obstacle, not from where the mower is standing**. The obstacle is spotted `check_horizon` metres out, and the row between here and there is perfectly good grass — so the mower keeps mowing up to the obstacle, and only then detours. The goal it follows is *row up to the obstacle → detour around → rest of the sweep from the rejoin point*, so the only thing given up is the stretch the obstacle physically occupies.
+4. If the controller gives up anyway (`FAILED_TO_MAKE_PROGRESS`, `NO_VALID_CONTROL`), it backs up `backup_distance` and replans from where it stands — no lead-in this time, since it has already stopped. After `max_recoveries` attempts in the same place it abandons `stuck_skip` metres of sweep and rejoins beyond it, and if that too buys no progress it stops and says the mower is stuck rather than blocked.
 
-The detour is sent as a new `FollowPath` goal that preempts the running one, which nav2 handles without stopping the mower. The abandoned stretches are published as red outlines on `/coverage_skipped`, and whatever is being followed right now on `/active_path` — add both in RViz. At the end of a run the node prints how many detours it made and how much sweep it gave up. This is a full 193 m run over the default boundary with two 0.8–0.9 m obstacles on it, one of them dropped in part-way through:
+The detour is sent as a new `FollowPath` goal that preempts the running one, which nav2 handles without stopping the mower. The abandoned stretches are published as red outlines on `/coverage_skipped`, and whatever is being followed right now on `/active_path` — add both in RViz. At the end of a run the node prints how many detours it made and how much sweep it gave up. This is a full 193 m run over the default boundary with a single 0.7 m cylinder standing on it, which the sweep crosses on three rows:
 
 ```
-coverage path complete: 8 detour(s) around obstacles the costmap saw coming, 2 recovery/recoveries after the controller gave up, 10.3m of 193m skipped in 8 stretch(es)
+coverage path complete: 3 detour(s) around obstacles the costmap saw coming, 3 recovery/recoveries after the controller gave up, 3.3m of 193m skipped in 3 stretch(es)
 ```
+
+About 1.1 m of sweep per row the obstacle stands on — a 0.7 m cylinder plus the clearance either side of it, which is roughly the floor for an obstacle that size.
 
 ### Seeing it work
 
@@ -176,20 +179,52 @@ Set in `launch/coverage.launch.xml`:
 | Parameter | Default | Purpose |
 |---|---|---|
 | `check_horizon` | 3.0 | How far ahead of the mower the sweep is checked against the costmap |
-| `blocked_cost` | 150 | Costmap cost at or above which a sweep point counts as blocked |
-| `clear_run` | 1.0 | How far the sweep must stay clear past an obstacle before the mower will rejoin it there |
+| `obstacle_clearance` | 0.40 | How far a sweep point must be from a real obstacle cell to count as drivable |
+| `clear_run` | 0.5 | How far the sweep must stay clear past an obstacle before the mower will rejoin it there |
 | `replan_cooldown` | 2.0 | Minimum seconds between replans |
 | `stuck_skip` | 2.0 | Sweep given up after repeated failures in one place |
 | `max_recoveries` | 3 | Failures in one place before that stretch is abandoned |
 
-`blocked_cost` is the one worth understanding. 150 is roughly the inflation cost at the mower's 0.43 m circumscribed radius — the distance beyond which its footprint cannot touch the obstacle whatever its heading — so anything at or above it is somewhere the mower might not fit. Raising it towards 253 (nav2's inscribed cost, meaning the footprint definitely collides) mows closer in, but then the executor calls rows drivable that the controller refuses to drive, and the run recovers its way past them instead of routing around cleanly. Lowering it gives obstacles a wider berth at the cost of more uncut grass.
+`obstacle_clearance` is the one worth understanding, and it sets **how much of a row** is given up. The mower's footprint is 0.25 m half-width, so 0.40 m is that plus 0.15 m for tracking error. Lower it to mow closer in, at the price of the controller refusing rows it judges uncrossable and the executor recovering instead of routing around cleanly.
+
+It is measured in metres against cells that hold a real obstacle, **not** against the inflation gradient. That matters: the gradient's reach is set by `inflation_radius` and `cost_scaling_factor`, so a threshold expressed in costmap units would silently change how much sweep the mower gives up every time the costmap was retuned for a different reason.
+
+"A real obstacle" means `lethal_cost` 254, nav2's `LETHAL_OBSTACLE` — a cell something is actually in. It is worth being deliberate about, because 253 looks like the same thing and is not: `INSCRIBED_INFLATED_OBSTACLE` is painted by the inflation layer over everything within the robot's 0.25 m inscribed radius of a real obstacle. Measuring clearance from those cells adds that 0.25 m to it, and the mower turns a quarter-metre early for no reason anyone can see in the parameters. Measured on a live costmap around a 0.50 m cylinder, cost-254 cells reached 0.12 m past its true surface while cost-253 cells reached 0.35 m.
+
+Expect roughly `obstacle_clearance` + 0.1 m in practice — the costmap is a 0.1 m grid and lidar returns land on cell corners, so marking rounds outwards.
 
 `check_horizon` must stay inside the global costmap's `obstacle_max_range` (6.0 m in `nav2_params.yaml`, raised from nav2's 2.5 m default for exactly this reason) or obstacles only get marked once the mower is on top of them, leaving nothing to route around.
 
-Two settings in `config/nav2_params.yaml` exist for the replanner:
+### How wide the detour swings
+
+`obstacle_clearance` decides where the mower stops on the row; it does not decide the shape of the arc that gets it round to the other side. That is NavFn planning on the global costmap's **inflation layer**, and it is worth knowing where the width comes from:
+
+| | |
+|---|---|
+| Obstacle radius (default test cylinder) | 0.35 m |
+| + mower footprint half-width | 0.25 m |
+| = physical floor, centre to centre | **0.60 m** |
+
+Cost is zero beyond `inflation_radius` and non-trivial inside it — with nav2's default 3.0 scaling, cells at the very edge of a 0.55 m inflation still cost ~100 against 0 for open grass. So NavFn had every reason to stay outside the whole 0.55 m band and none to come back in, putting the arc 0.90 m from the obstacle's centre. The global costmap therefore runs a tighter, steeper inflation than the local one (`inflation_radius: 0.40`, `cost_scaling_factor: 5.0`), which stays above the 0.25 m inscribed radius the controller's own footprint check depends on. Measured over identical runs:
+
+Measured over identical runs against a 0.35 m test cylinder, this is what the inflation change bought — these figures are the **detour arc**, the closest the mower comes to the obstacle at any point in the manoeuvre:
+
+| | Before | After |
+|---|---|---|
+| Closest approach to obstacle centre | 0.88 m | **0.72 m** |
+| Clear of the obstacle's surface | 0.53 m | 0.37 m |
+| Ground-truth samples within 1 m of it | 56 | **183** |
+| Recoveries in the same window | 2 | 3 |
+
+0.72 m against a 0.60 m floor. The local costmap is deliberately left at 0.55 / 3.0 — it feeds the controller's collision checking, which keys off the inscribed marking rather than the gradient.
+
+Note which knob does what: this one sets the **arc**, and it is the closest approach because the arc passes nearer than the row ends do. Where the mower stops on the row and turns is `obstacle_clearance` above — on the same runs it turned 0.41–0.48 m from the cylinder's surface, mean 0.45 m, against the 0.40 m configured.
+
+Three settings in `config/nav2_params.yaml` exist for the replanner:
 
 - **`always_send_full_costmap: true`** on the global costmap. With the default `false`, nav2 publishes the full grid once — before anything has subscribed — and only incremental updates after that, so a node starting with the coverage run receives patches with no base grid to apply them to and sees an empty field forever. The executor applies `costmap_raw_updates` too, so it works either way, but it needs one full grid to start from.
 - **`obstacle_max_range: 6.0` / `raytrace_max_range: 8.0`** on the global costmap's obstacle layer, as above.
+- **`inflation_radius: 0.40` / `cost_scaling_factor: 5.0`** on the global costmap's inflation layer, so detours hug obstacles instead of swinging around the full inflation band.
 
 ## Verifying it works
 

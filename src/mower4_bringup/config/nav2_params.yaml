@@ -135,5 +135,13 @@ global_costmap:
           raytrace_max_range: 8.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.55
+        # This is what decides how wide a berth a detour gives an obstacle.
+        # Cost is zero beyond inflation_radius, so NavFn has no reason to
+        # route further out than that - and every reason to stay outside it,
+        # since the default 3.0 scaling leaves cells at the far edge still
+        # costing ~100 against 0 for open grass. 0.40m with a steeper falloff
+        # keeps the detour hugging the obstacle instead of swinging around
+        # all 0.55m of gradient. It stays above the 0.25m inscribed radius,
+        # which is what the inscribed marking the controller checks needs.
+        cost_scaling_factor: 5.0
+        inflation_radius: 0.40

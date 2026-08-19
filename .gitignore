@@ -17,3 +17,7 @@ __pycache__/
 # Temporary files
 *.swp
 *~
+
+# Large media - exceeds GitHub's 100MB file size limit, use Git LFS or an
+# external host instead of committing directly
+demo.mp4
