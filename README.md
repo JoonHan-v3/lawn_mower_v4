@@ -4,7 +4,7 @@ A ROS 2 + Gazebo simulation of a differential-drive robotic lawn mower: a chassi
 
 The default setup mows the L-shaped boundary in `config/boundary.yaml` — a 10 × 10 m square with its north-east 4 × 4 m quadrant notched out, 84 m² with one reflex corner — on a 22 × 22 m field. The field is deliberately larger than the mow area so an imperfect stop at a boundary corner lands on solid ground instead of driving off the edge.
 
-![demo](demo.mp4)
+![demo](demo.png)
 
 ## What's new in this version
 
